@@ -5,6 +5,7 @@ import it.unisa.dia.gas.plaf.jpbc.pairing.PairingFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import static java.lang.Integer.valueOf;
 
@@ -85,7 +86,7 @@ public class AccessTree {
     }
 
     // 恢复秘密
-    public static boolean nodeRecover(Node[] nodes, Node n,  String[] atts, Pairing bp) {
+    public static boolean nodeRecover(Node[] nodes, Node n,  int[] atts, Pairing bp) {
         if (!n.isLeaf()) {
             // 对于内部节点，维护一个子节点索引列表，用于秘密恢复。
             List<Integer> validChildrenList = new ArrayList<Integer>();
@@ -116,7 +117,7 @@ public class AccessTree {
             }
         }
         else {
-            if (Arrays.asList(atts).contains(n.att)){
+            if (Arrays.stream(atts).boxed().collect(Collectors.toList()).contains(n.att)){
                 n.valid = true;
             }
         }
@@ -129,15 +130,13 @@ public class AccessTree {
         Pairing bp = PairingFactory.getPairing("a.properties");
 
         Node[] nodes = new Node[7];
-
         nodes[0] = new Node(new int[]{2,3}, new int[]{1,2,3});
-        nodes[1] = new Node("A");
+        nodes[1] = new Node(1);
         nodes[2] = new Node(new int[]{2,3}, new int[]{4,5,6});
-        nodes[3] = new Node("E");
-        nodes[4] = new Node("B");
-        nodes[5] = new Node("C");
-        nodes[6] = new Node("D");
-
+        nodes[3] = new Node(5);
+        nodes[4] = new Node(2);
+        nodes[5] = new Node(3);
+        nodes[6] = new Node(4);
 
         nodes[0].secretShare = bp.getZr().newElement(10);
         nodeShare(nodes, nodes[0], bp);
@@ -156,8 +155,8 @@ public class AccessTree {
             System.out.println(node.secretShare);
         }
 
-        String[] atts = new String[]{"A", "C", "D"};
-        boolean res = nodeRecover(nodes, nodes[0], atts, bp);
+        int[] AttList = {1, 2, 3, 5};
+        boolean res = nodeRecover(nodes, nodes[0], AttList, bp);
 
         System.out.println("++++++++++++++++++++++++++++++++++++++++++++++++");
         System.out.println("++++++++++++++++++++++++++++++++++++++++++++++++");
@@ -167,5 +166,5 @@ public class AccessTree {
             System.out.println(node.secretShare);
         }
         System.out.println(res);
-    }
+   }
 }

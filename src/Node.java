@@ -12,7 +12,7 @@ public class Node {
     public int[] children;
     // att表示属性值，
     // 如果是内部节点，此字段null
-    public String att;
+    public int att;
     // 对应的秘密值
     public Element secretShare;
 
@@ -24,7 +24,7 @@ public class Node {
         this.children = children;
     }
     // 叶子节点的构造方法
-    public Node(String att){
+    public Node(int att){
         this.att = att;
     }
     public boolean isLeaf() {
@@ -33,7 +33,7 @@ public class Node {
     @Override
     public String toString() {
         if (this.isLeaf()){
-            return this.att;
+            return Integer.toString(this.att);
         }
         else {
             return Arrays.toString(this.gate);
