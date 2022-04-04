@@ -2,141 +2,163 @@ import it.unisa.dia.gas.jpbc.Element;
 import it.unisa.dia.gas.jpbc.Pairing;
 import it.unisa.dia.gas.plaf.jpbc.pairing.PairingFactory;
 
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
+import java.io.*;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.stream.Collectors;
 
 import static java.lang.Integer.valueOf;
 
-public class KPABE {
+public class CPABE {
 
-    public static void setup(String pairingParametersFileName, int U, String pkFileName, String mskFileName) {
+    public static void setup(String pairingParametersFileName, String pkFileName, String mskFileName) {
         Pairing bp = PairingFactory.getPairing(pairingParametersFileName);
         Element g = bp.getG1().newRandomElement().getImmutable();
+        Element alpha = bp.getZr().newRandomElement().getImmutable();
+        Element beta = bp.getZr().newRandomElement().getImmutable();
+
+        Element g_alpha = g.powZn(alpha).getImmutable();
+        Element g_beta = g.powZn(beta).getImmutable();
+        Element egg_alpha = bp.pairing(g,g).powZn(alpha).getImmutable();
 
         Properties mskProp = new Properties();
+        mskProp.setProperty("g_alpha", Base64.getEncoder().withoutPadding().encodeToString(g_alpha.toBytes()));
+
         Properties pkProp = new Properties();
-        //属性表示为1，2，3，...，U
-        //对每个属性i，选取一个随机数ti作为该属性对应的主密钥，并计算相应公钥g^ti
-        for (int i = 1; i <= U; i++){
-            Element t = bp.getZr().newRandomElement().getImmutable();
-            Element T = g.powZn(t).getImmutable();
-            mskProp.setProperty("t"+i, Base64.getEncoder().withoutPadding().encodeToString(t.toBytes()));
-            pkProp.setProperty("T"+i, Base64.getEncoder().withoutPadding().encodeToString(T.toBytes()));
-        }
-        //另外选取一个随机数y，计算e(g,g)^y
-        Element y = bp.getZr().newRandomElement().getImmutable();
-        Element egg_y = bp.pairing(g, g).powZn(y).getImmutable();
-        mskProp.setProperty("y", Base64.getEncoder().withoutPadding().encodeToString(y.toBytes()));
-        pkProp.setProperty("egg_y", Base64.getEncoder().withoutPadding().encodeToString(egg_y.toBytes()));
         pkProp.setProperty("g", Base64.getEncoder().withoutPadding().encodeToString(g.toBytes()));
+        pkProp.setProperty("g_beta", Base64.getEncoder().withoutPadding().encodeToString(g_beta.toBytes()));
+        pkProp.setProperty("egg_alpha", Base64.getEncoder().withoutPadding().encodeToString(egg_alpha.toBytes()));
 
         storePropToFile(mskProp, mskFileName);
         storePropToFile(pkProp, pkFileName);
     }
 
-    public static void keygen(String pairingParametersFileName, Node[] accessTree, String pkFileName, String mskFileName, String skFileName) throws NoSuchAlgorithmException {
+    public static void keygen(String pairingParametersFileName, int[] userAttList, String pkFileName, String mskFileName, String skFileName) throws NoSuchAlgorithmException {
         Pairing bp = PairingFactory.getPairing(pairingParametersFileName);
 
         Properties pkProp = loadPropFromFile(pkFileName);
         String gString = pkProp.getProperty("g");
         Element g = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(gString)).getImmutable();
+        String g_betaString = pkProp.getProperty("g_beta");
+        Element g_beta = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(g_betaString)).getImmutable();
 
         Properties mskProp = loadPropFromFile(mskFileName);
-        String yString = mskProp.getProperty("y");
-        Element y = bp.getZr().newElementFromBytes(Base64.getDecoder().decode(yString)).getImmutable();
-
-        //先设置根节点要共享的秘密值
-        accessTree[0].secretShare = y;
-        //进行共享，使得每个叶子节点获得响应的秘密分片
-        nodeShare(accessTree, accessTree[0], bp);
+        String g_alphaString = mskProp.getProperty("g_alpha");
+        Element g_alpha = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(g_alphaString)).getImmutable();
 
         Properties skProp = new Properties();
-        //计算每个属性对应的私钥g^(q/t)，q是多项式在该属性位置的值，t是属性对应的主密钥
-        for (Node node : accessTree) {
-            if (node.isLeaf()) {
-                // 对于每个叶子结点，先获取对应的主秘钥组件t，然后计算秘钥组件。
-                String tString = mskProp.getProperty("t"+node.att);
-                Element t = bp.getZr().newElementFromBytes(Base64.getDecoder().decode(tString)).getImmutable();
-                Element q = node.secretShare;
-                Element D = g.powZn(q.div(t)).getImmutable();
-                skProp.setProperty("D"+node.att, Base64.getEncoder().withoutPadding().encodeToString(D.toBytes()));
-            }
+
+        Element t = bp.getZr().newRandomElement().getImmutable();
+        Element D = g_alpha.mul(g_beta.powZn(t)).getImmutable();
+        Element D0 = g.powZn(t);
+
+        skProp.setProperty("D", Base64.getEncoder().withoutPadding().encodeToString(D.toBytes()));
+        skProp.setProperty("D0", Base64.getEncoder().withoutPadding().encodeToString(D0.toBytes()));
+
+        for (int att : userAttList) {
+            byte[] idHash = sha1(Integer.toString(att));
+            Element H = bp.getG1().newElementFromHash(idHash, 0, idHash.length).getImmutable();
+            Element Datt = H.powZn(t).getImmutable();
+            skProp.setProperty("D"+att, Base64.getEncoder().withoutPadding().encodeToString(Datt.toBytes()));
         }
-        //将用户访问树也添加在私钥中
-        //如何进行序列化和反序列化
-//        skProp.setProperty("userAttList", Arrays.toString(accessTree));
+
+        skProp.setProperty("userAttList", Arrays.toString(userAttList));
         storePropToFile(skProp, skFileName);
     }
 
-    public static void encrypt(String pairingParametersFileName, Element message, int[] messageAttList, String pkFileName, String ctFileName) {
+    public static void encrypt(String pairingParametersFileName, Element message, Node[] accessTree,
+                               String pkFileName, String ctFileName) throws NoSuchAlgorithmException {
         Pairing bp = PairingFactory.getPairing(pairingParametersFileName);
 
         Properties pkProp = loadPropFromFile(pkFileName);
-        String eggString = pkProp.getProperty("egg_y");
-        Element egg_y = bp.getGT().newElementFromBytes(Base64.getDecoder().decode(eggString)).getImmutable();
-        //计算密文组件 EP=Me(g,g)^(ys)
-        Element s = bp.getZr().newRandomElement().getImmutable();
-        Element EP = message.duplicate().mul(egg_y.powZn(s)).getImmutable();
+        String gString = pkProp.getProperty("g");
+        Element g = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(gString)).getImmutable();
+        String g_betaString = pkProp.getProperty("g_beta");
+        Element g_beta = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(g_betaString)).getImmutable();
+        String egg_alphaString = pkProp.getProperty("egg_alpha");
+        Element egg_alpha = bp.getGT().newElementFromBytes(Base64.getDecoder().decode(egg_alphaString)).getImmutable();
 
         Properties ctProp = new Properties();
-        //针对每个密文属性，计算密文组件 E=T^s
-        for (int att : messageAttList) {
-            String TString = pkProp.getProperty("T"+att);
-            Element T = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(TString)).getImmutable();
-            Element E = T.powZn(s).getImmutable();
+        //计算密文组件 C=M e(g,g)^(alpha s)
+        Element s = bp.getZr().newRandomElement().getImmutable();
+        Element C = message.duplicate().mul(egg_alpha.powZn(s)).getImmutable();
+        Element C0 = g.powZn(s).getImmutable();
 
-            ctProp.setProperty("E"+att, Base64.getEncoder().withoutPadding().encodeToString(E.toBytes()));
+        ctProp.setProperty("C", Base64.getEncoder().withoutPadding().encodeToString(C.toBytes()));
+        ctProp.setProperty("C0", Base64.getEncoder().withoutPadding().encodeToString(C0.toBytes()));
+
+        //先设置根节点要共享的秘密值
+        accessTree[0].secretShare = s;
+        //进行共享，使得每个叶子节点获得响应的秘密分片
+        nodeShare(accessTree, accessTree[0], bp);
+
+        for (Node node:accessTree) {
+            if (node.isLeaf()){
+                Element r = bp.getZr().newRandomElement().getImmutable();
+
+                byte[] idHash = sha1(Integer.toString(node.att));
+                Element Hi = bp.getG1().newElementFromHash(idHash, 0, idHash.length).getImmutable();
+
+                Element C1 = g_beta.powZn(node.secretShare).mul(Hi.powZn(r.negate()));
+                Element C2 = g.powZn(r);
+
+                ctProp.setProperty("C1-"+node.att, Base64.getEncoder().withoutPadding().encodeToString(C1.toBytes()));
+                ctProp.setProperty("C2-"+node.att, Base64.getEncoder().withoutPadding().encodeToString(C2.toBytes()));
+            }
         }
-        ctProp.setProperty("EP", Base64.getEncoder().withoutPadding().encodeToString(EP.toBytes()));
-        //密文属性列表也添加至密文中
-        ctProp.setProperty("messageAttList", Arrays.toString(messageAttList));
         storePropToFile(ctProp, ctFileName);
     }
 
-    public static Element decrypt(String pairingParametersFileName, Node[] accessTree, String pkFileName, String ctFileName, String skFileName) {
+    public static Element Decrypt(String pairingParametersFileName, Node[] accessTree, String ctFileName, String skFileName) {
         Pairing bp = PairingFactory.getPairing(pairingParametersFileName);
 
-        Properties pkProp = loadPropFromFile(pkFileName);
-
         Properties ctProp = loadPropFromFile(ctFileName);
-        String messageAttListString = ctProp.getProperty("messageAttList");
-        //恢复明文消息的属性列表 int[]类型
-        int[] messageAttList = Arrays.stream(messageAttListString.substring(1, messageAttListString.length()-1).split(",")).map(String::trim).mapToInt(Integer::parseInt).toArray();
 
         Properties skProp = loadPropFromFile(skFileName);
+        String userAttListString = skProp.getProperty("userAttList");
+        //恢复用户属性列表 int[]类型
+        int[] userAttList = Arrays.stream(userAttListString.substring(1, userAttListString.length()-1).split(",")).map(String::trim).mapToInt(Integer::parseInt).toArray();
+
+        System.out.println("用户属性列表：" + userAttListString);
+
+        String CString = ctProp.getProperty("C");
+        Element C = bp.getGT().newElementFromBytes(Base64.getDecoder().decode(CString)).getImmutable();
+        String C0String = ctProp.getProperty("C0");
+        Element C0 = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(C0String)).getImmutable();
+
+        String DString = skProp.getProperty("D");
+        Element D = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(DString)).getImmutable();
+        String D0String = skProp.getProperty("D0");
+        Element D0 = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(D0String)).getImmutable();
+
         for (Node node : accessTree) {
             if (node.isLeaf()) {
                 // 如果叶子节点的属性值属于属性列表，则将属性对应的密文组件和秘钥组件配对的结果作为秘密值
-                if (Arrays.stream(messageAttList).boxed().collect(Collectors.toList()).contains(node.att)){
-                    String EString = ctProp.getProperty("E"+node.att);
-                    Element E = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(EString)).getImmutable();
-                    String DString = skProp.getProperty("D"+node.att);
-                    Element D = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(DString)).getImmutable();
-                    // 这儿存在于密文属性列表中的叶子节点的秘密值是配对后的结果
-                    node.secretShare = bp.pairing(E,D).getImmutable();
+                if (Arrays.stream(userAttList).boxed().collect(Collectors.toList()).contains(node.att)){
+                    String C1tring = ctProp.getProperty("C1-"+node.att);
+                    Element C1 = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(C1tring)).getImmutable();
+                    String C2tring = ctProp.getProperty("C2-"+node.att);
+                    Element C2 = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(C2tring)).getImmutable();
+
+                    String DattString = skProp.getProperty("D"+node.att);
+                    Element Datt = bp.getG1().newElementFromBytes(Base64.getDecoder().decode(DattString)).getImmutable();
+
+                    node.secretShare = bp.pairing(C1,D0).mul(bp.pairing(C2,Datt)).getImmutable();
                 }
             }
         }
         // 进行秘密恢复
-        boolean treeOK = nodeRecover(accessTree, accessTree[0], messageAttList, bp);
+        boolean treeOK = nodeRecover(accessTree, accessTree[0], userAttList, bp);
         if (treeOK) {
-            String EPString = ctProp.getProperty("EP");
-            Element EP = bp.getGT().newElementFromBytes(Base64.getDecoder().decode(EPString)).getImmutable();
-            //恢复M=EP除以上述连乘结果
-            Element res = EP.div(accessTree[0].secretShare);
-            return res;
+            Element egg_alphas = bp.pairing(C0,D).div(accessTree[0].secretShare);
+            return C.div(egg_alphas);
         }
-        else{
+        else {
             System.out.println("The access tree is not satisfied.");
-            return  null;
+            return null;
         }
     }
-
-
 
     //d-1次多项式表示为q(x)=coef[0] + coef[1]*x^1 + coef[2]*x^2 + coef[d-1]*x^(d-1)
     //多项式的系数的数据类型为Zr Element，从而是的后续相关计算全部在Zr群上进行
@@ -264,24 +286,30 @@ public class KPABE {
         return prop;
     }
 
+    public static byte[] sha1(String content) throws NoSuchAlgorithmException {
+        MessageDigest instance = MessageDigest.getInstance("SHA-1");
+        instance.update(content.getBytes());
+        return instance.digest();
+    }
 
-    public static void main(String[] args) throws Exception {
-        int U = 20;
-        int[] messageAttList = {1, 2, 4, 5};
-        Node[] accessTree = new Node[7];
-        accessTree[0] = new Node(new int[]{2,3}, new int[]{1,2,3});
-        accessTree[1] = new Node(1);
-        accessTree[2] = new Node(new int[]{2,3}, new int[]{4,5,6});
-        accessTree[3] = new Node(5);
-        accessTree[4] = new Node(2);
-        accessTree[5] = new Node(3);
-        accessTree[6] = new Node(4);
+    public static void basicTest() throws Exception {
+        int[] userAttList = {1, 2, 3};
 
-//        int[] messageAttList = {1};
-//        Node[] accessTree = new Node[3];
-//        accessTree[0] = new Node(new int[]{2,2}, new int[]{1,2});
+//        Node[] accessTree = new Node[7];
+//        accessTree[0] = new Node(new int[]{2,3}, new int[]{1,2,3});
 //        accessTree[1] = new Node(1);
-//        accessTree[2] = new Node(2);
+//        accessTree[2] = new Node(new int[]{2,3}, new int[]{4,5,6});
+//        accessTree[3] = new Node(5);
+//        accessTree[4] = new Node(2);
+//        accessTree[5] = new Node(3);
+//        accessTree[6] = new Node(4);
+
+        Node[] accessTree = new Node[5];
+        accessTree[0] = new Node(new int[]{4,4}, new int[]{1,2,3,4});
+        accessTree[1] = new Node(1);
+        accessTree[2] = new Node(2);
+        accessTree[3] = new Node(3);
+        accessTree[4] = new Node(4);
 
         String dir = "data/";
         String pairingParametersFileName = "a.properties";
@@ -290,24 +318,22 @@ public class KPABE {
         String skFileName = dir + "sk.properties";
         String ctFileName = dir + "ct.properties";
 
-        setup(pairingParametersFileName, U, pkFileName, mskFileName);
-
-        keygen(pairingParametersFileName, accessTree, pkFileName, mskFileName, skFileName);
+        setup(pairingParametersFileName, pkFileName, mskFileName);
+        keygen(pairingParametersFileName, userAttList, pkFileName, mskFileName, skFileName);
 
         Element message = PairingFactory.getPairing(pairingParametersFileName).getGT().newRandomElement().getImmutable();
-//        System.out.println("明文消息:" + message);
-        encrypt(pairingParametersFileName, message, messageAttList, pkFileName, ctFileName);
+        System.out.println("明文消息:" + message);
+        encrypt(pairingParametersFileName, message, accessTree, pkFileName, ctFileName);
 
-        // 模拟实际情况，将所有的节点的secretShare置为null
-        for (Node node : accessTree) {
-            node.secretShare = null;
-        }
-
-        Element res = decrypt(pairingParametersFileName, accessTree, pkFileName, ctFileName, skFileName);
+       Element res = Decrypt(pairingParametersFileName, accessTree, ctFileName, skFileName);
         System.out.println("解密结果:" + res);
+
         if (message.isEqual(res)) {
             System.out.println("成功解密！");
         }
+    }
+    public static void main(String[] args) throws Exception {
+        basicTest();
     }
 
 }
